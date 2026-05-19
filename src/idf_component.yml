@@ -1,0 +1,3 @@
+dependencies:
+  cherry-embedded/cherryusb:
+    version: "^1.5.2~2"
