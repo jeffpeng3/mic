@@ -12,7 +12,6 @@
 #include "usb_descriptor.h"
 
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t write_buffer[AUDIO_IN_PACKET];
-USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t feedback_buffer[AUDIO_IN_FEEDBACK_PACKET_SIZE];
 
 volatile bool tx_flag = 0;
 SemaphoreHandle_t ep_tx_done_sem = NULL;
@@ -46,6 +45,9 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
 void usbd_audio_open(uint8_t busid, uint8_t intf)
 {
   tx_flag = 1;
+  if (ep_tx_done_sem != NULL) {
+    xSemaphoreGive(ep_tx_done_sem);
+  }
   USB_LOG_RAW("OPEN\r\n");
 }
 
@@ -54,7 +56,24 @@ void usbd_audio_close(uint8_t busid, uint8_t intf)
   USB_LOG_RAW("CLOSE\r\n");
   tx_flag = 0;
 }
+volatile int current_mic_volume = 100; 
 
+void usbd_audio_set_volume(uint8_t busid, uint8_t ep, uint8_t ch, int volume) {
+    current_mic_volume = volume;
+    // 你可以把 current_mic_volume 乘進去你的 sinf() 計算裡來動態改變正弦波大小
+}
+
+int usbd_audio_get_volume(uint8_t busid, uint8_t ep, uint8_t ch) {
+    return current_mic_volume;
+}
+
+void usbd_audio_set_mute(uint8_t busid, uint8_t ep, uint8_t ch, bool mute) {
+
+}
+
+bool usbd_audio_get_mute(uint8_t busid, uint8_t ep, uint8_t ch) {
+    return false;
+}
 void usbd_audio_set_sampling_freq(uint8_t busid, uint8_t ep, uint32_t sampling_freq)
 {
   if (ep == AUDIO_IN_EP)
@@ -92,30 +111,14 @@ void usbd_audio_iso_in_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-void usbd_audio_feedback_in_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
-{
-  (void)busid;
-  (void)ep;
-  (void)nbytes;
-  // log feedback callback, can be used to trigger next data generation if needed
-  ESP_LOGI("USB_AUDIO_DEMO", "Feedback IN callback, nbytes: %d", nbytes);
-}
-
 static struct usbd_endpoint audio_in_ep = {
     .ep_cb = usbd_audio_iso_in_callback,
     .ep_addr = AUDIO_IN_EP};
-
-static struct usbd_endpoint audio_in_feedback_ep = {
-    .ep_cb = usbd_audio_feedback_in_callback,
-    .ep_addr = AUDIO_IN_FEEDBACK_EP};
 
 struct usbd_interface intf0;
 struct usbd_interface intf1;
 
 struct audio_entity_info audio_entity_table[] = {
-    {.bEntityId = AUDIO_IN_CLOCK_ID,
-     .bDescriptorSubtype = AUDIO_CONTROL_CLOCK_SOURCE,
-     .ep = AUDIO_IN_EP},
     {.bEntityId = AUDIO_IN_FU_ID,
      .bDescriptorSubtype = AUDIO_CONTROL_FEATURE_UNIT,
      .ep = AUDIO_IN_EP},
@@ -123,11 +126,10 @@ struct audio_entity_info audio_entity_table[] = {
 
 void audio_v2_init(uint8_t busid, uintptr_t reg_base)
 {
-  usbd_desc_register(busid, &audio_v2_descriptor);
-  usbd_add_interface(busid, usbd_audio_init_intf(busid, &intf0, 0x0200, audio_entity_table, 2));
-  usbd_add_interface(busid, usbd_audio_init_intf(busid, &intf1, 0x0200, audio_entity_table, 2));
+  usbd_desc_register(busid, &audio_v1_descriptor);
+  usbd_add_interface(busid, usbd_audio_init_intf(busid, &intf0, 0x0100, audio_entity_table, 1));
+  usbd_add_interface(busid, usbd_audio_init_intf(busid, &intf1, 0x0100, audio_entity_table, 1));
   usbd_add_endpoint(busid, &audio_in_ep);
-  usbd_add_endpoint(busid, &audio_in_feedback_ep);
 
   ep_tx_done_sem = xSemaphoreCreateBinary();
   if (ep_tx_done_sem == NULL)
@@ -146,9 +148,8 @@ float g_phase[IN_CHANNEL_NUM] = {0};
 void audio_v2_task(void *arg)
 {
   const uint8_t busid = 0;
-  const float freqs[IN_CHANNEL_NUM] = {440.0f, 880.0f, 1200.0f, 1600.0f}; // 四個通道不同的頻率
-  const int frame_count = AUDIO_IN_PACKET / (HALF_WORD_BYTES * IN_CHANNEL_NUM);
-  const int packet_size = AUDIO_IN_PACKET;
+  const float freqs[4] = {440.0f, 880.0f, 1320.0f, 1760.0f};
+  int16_t pcm_local_buf[AUDIO_IN_PACKET / HALF_WORD_BYTES];
 
   while (1)
   {
@@ -158,15 +159,20 @@ void audio_v2_task(void *arg)
       continue;
     }
 
-    memset(write_buffer, 0, 4);
-    int16_t *pcm_buf = (int16_t *)(write_buffer);
+    uint32_t packet_size = (s_mic_sample_rate * HALF_WORD_BYTES * IN_CHANNEL_NUM) / 1000;
+    if (packet_size > AUDIO_IN_PACKET)
+    {
+      packet_size = AUDIO_IN_PACKET;
+    }
+
+    const int frame_count = packet_size / (HALF_WORD_BYTES * IN_CHANNEL_NUM);
     int idx = 0;
     for (int frame = 0; frame < frame_count; frame++)
     {
       for (int ch = 0; ch < IN_CHANNEL_NUM; ch++)
       {
         float val = sinf(g_phase[ch]);
-        pcm_buf[idx++] = (int16_t)(val * 32767.0f);
+        pcm_local_buf[idx++] = (int16_t)(val * 32767.0f);
 
         g_phase[ch] += 2.0f * M_PI * freqs[ch] / (float)s_mic_sample_rate;
         if (g_phase[ch] >= 2.0f * M_PI)
@@ -175,21 +181,17 @@ void audio_v2_task(void *arg)
         }
       }
     }
-    ESP_LOGI("USB_AUDIO_DEMO", "Generated %d bytes of audio data", packet_size);
-    usbd_ep_start_write(busid, AUDIO_IN_EP, write_buffer, packet_size);
-
-    uint32_t feedback_value = AUDIO_FREQ_TO_FEEDBACK_FS(s_mic_sample_rate);
-    AUDIO_FEEDBACK_TO_BUF_FS(feedback_buffer, feedback_value);
-    usbd_ep_start_write(busid, AUDIO_IN_FEEDBACK_EP, feedback_buffer, AUDIO_IN_FEEDBACK_PACKET_SIZE);
 
     if (ep_tx_done_sem != NULL)
     {
-      if (xSemaphoreTake(ep_tx_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE)
+      if (xSemaphoreTake(ep_tx_done_sem, pdMS_TO_TICKS(50)) != pdTRUE)
       {
         ESP_LOGW("USB_AUDIO_DEMO", "USB TX timeout waiting for callback");
       }
     }
-    ESP_LOGI("USB_AUDIO_DEMO", "Audio data sent");
+
+    memcpy(write_buffer, pcm_local_buf, packet_size);
+    usbd_ep_start_write(busid, AUDIO_IN_EP, write_buffer, packet_size);
   }
 }
 
