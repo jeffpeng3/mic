@@ -135,14 +135,6 @@ static esp_err_t mic_i2s_read_channel(i2s_chan_handle_t channel, void *dest, siz
     return i2s_channel_read(channel, dest, size, bytes_read, timeout_ms);
 }
 
-esp_err_t mic_i2s_read(void *dest, size_t size, size_t *bytes_read, uint32_t timeout_ms)
-{
-    if (rx_chan1 == NULL)
-    {
-        return ESP_ERR_INVALID_STATE;
-    }
-    return i2s_channel_read(rx_chan1, dest, size, bytes_read, timeout_ms);
-}
 
 static uint32_t mic_get_packet_size(void)
 {
