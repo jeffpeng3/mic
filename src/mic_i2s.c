@@ -206,10 +206,10 @@ static void mic_capture_task(void *arg)
             int16_t sample16_2_r = (int16_t)(sample2_r >> 13);
 
             int idx = frame * IN_CHANNEL_NUM;
-            pcm_local_buf[idx++] = sample16_1_l;
             pcm_local_buf[idx++] = sample16_1_r;
-            pcm_local_buf[idx++] = sample16_2_l;
+            pcm_local_buf[idx++] = sample16_1_l;
             pcm_local_buf[idx++] = sample16_2_r;
+            pcm_local_buf[idx++] = sample16_2_l;
         }
 
         if (frames_to_fill < frame_count_per_packet)
