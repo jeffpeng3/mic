@@ -1,8 +1,9 @@
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/stream_buffer.h"
+#include "freertos/queue.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "usb_descriptor.h"
@@ -11,7 +12,8 @@
 #define TAG "MIC_SIM"
 
 struct mic_sim_task_param {
-    StreamBufferHandle_t stream;
+    QueueHandle_t free_queue;
+    QueueHandle_t ready_queue;
     uint32_t sampling_freq_table[4];
 };
 uint16_t sin_table[16384];
@@ -19,15 +21,16 @@ uint16_t sin_table[16384];
 void mic_sim_task(void *param)
 {
     struct mic_sim_task_param *task_param = (struct mic_sim_task_param *)param;
-    StreamBufferHandle_t write_stream = task_param->stream;
+    QueueHandle_t free_queue = task_param->free_queue;
+    QueueHandle_t ready_queue = task_param->ready_queue;
     uint32_t sampling_freq_table[4];
     for (int i = 0; i < 4; i++)
     {
         sampling_freq_table[i] = task_param->sampling_freq_table[i];
     }
+    free(task_param);
     uint32_t state[IN_CHANNEL_NUM] = {0};
     uint32_t phase_increment[IN_CHANNEL_NUM];
-    int16_t pcm_data[AUDIO_IN_PACKET / sizeof(int16_t)];
     for (int j = 0; j < 16384; j++)
     {
         sin_table[j] = (uint16_t)(32767 * sin(2 * M_PI * j / 16384));
@@ -38,26 +41,38 @@ void mic_sim_task(void *param)
     }
     while (true)
     {
+        uint8_t *output_buffer = NULL;
+        if (xQueueReceive(free_queue, &output_buffer, portMAX_DELAY) != pdTRUE || output_buffer == NULL)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         // generate PCM data for one packet of 4 channels 48kHz 16bit by simulating a sine wave with frequency from sampling_freq_table
+        int16_t *pcm_out = (int16_t *)output_buffer;
         for (int ch = 0; ch < IN_CHANNEL_NUM; ch++)
         {
             for (int j = 0; j < AUDIO_IN_PACKET / sizeof(int16_t) / IN_CHANNEL_NUM; j++)
             {
-                pcm_data[j * IN_CHANNEL_NUM + ch] = (int16_t)sin_table[(state[ch] >> 18) % 16384];
+                pcm_out[j * IN_CHANNEL_NUM + ch] = (int16_t)sin_table[(state[ch] >> 18) % 16384];
                 state[ch] += phase_increment[ch];
             }
         }
-        if (write_stream != NULL)
-        {
-            xStreamBufferSend(write_stream, pcm_data, sizeof(pcm_data), portMAX_DELAY);
-        }
+
+        xQueueSend(ready_queue, &output_buffer, portMAX_DELAY);
     }
 }
 
-void mic_sim_start_task(StreamBufferHandle_t stream, const uint32_t *sampling_freq_table)
+void mic_sim_start_task(QueueHandle_t free_queue, QueueHandle_t ready_queue, const uint32_t *sampling_freq_table)
 {
     struct mic_sim_task_param *task_param = malloc(sizeof(struct mic_sim_task_param));
-    task_param->stream = stream;
+    if (task_param == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate mic sim task parameters");
+        return;
+    }
+    task_param->free_queue = free_queue;
+    task_param->ready_queue = ready_queue;
     for (int i = 0; i < 4; i++)
     {
         task_param->sampling_freq_table[i] = sampling_freq_table[i];

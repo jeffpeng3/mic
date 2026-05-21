@@ -4,13 +4,13 @@
 #include <esp_err.h>
 #include <stdint.h>
 #include <stddef.h>
-#include "freertos/stream_buffer.h"
+#include "freertos/queue.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void mic_sim_start_task(StreamBufferHandle_t stream, const uint32_t *sampling_freq_table);
+void mic_sim_start_task(QueueHandle_t free_queue, QueueHandle_t ready_queue, const uint32_t *sampling_freq_table);
 
 #ifdef __cplusplus
 }

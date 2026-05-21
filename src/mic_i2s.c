@@ -1,7 +1,8 @@
+#include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/stream_buffer.h"
+#include "freertos/queue.h"
 #include "driver/i2s_std.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -146,18 +147,34 @@ static uint32_t mic_get_packet_size(void)
     return packet_size;
 }
 
+struct mic_i2s_task_param {
+    QueueHandle_t free_queue;
+    QueueHandle_t ready_queue;
+};
+
 static void mic_capture_task(void *arg)
 {
-    StreamBufferHandle_t write_stream = (StreamBufferHandle_t)arg;
-    int16_t pcm_local_buf[AUDIO_IN_PACKET / HALF_WORD_BYTES];
+    struct mic_i2s_task_param *task_param = (struct mic_i2s_task_param *)arg;
+    QueueHandle_t free_queue = task_param->free_queue;
+    QueueHandle_t ready_queue = task_param->ready_queue;
+    free(task_param);
+
     int32_t i2s_read_buf[AUDIO_IN_PACKET / sizeof(int32_t)];
     int32_t i2s_read_buf2[AUDIO_IN_PACKET / sizeof(int32_t)];
 
     while (1)
     {
+        uint8_t *output_buffer = NULL;
+        if (xQueueReceive(free_queue, &output_buffer, portMAX_DELAY) != pdTRUE || output_buffer == NULL)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         uint32_t packet_size = mic_get_packet_size();
         if (packet_size == 0)
         {
+            xQueueSend(free_queue, &output_buffer, portMAX_DELAY);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -169,13 +186,13 @@ static void mic_capture_task(void *arg)
             read_size = sizeof(i2s_read_buf);
         }
 
-
         size_t bytes_read1 = 0;
         esp_err_t err1 = mic_i2s_read_channel(rx_chan1, i2s_read_buf, read_size, &bytes_read1, portMAX_DELAY);
         size_t bytes_read2 = 0;
         esp_err_t err2 = mic_i2s_read_channel(rx_chan2, i2s_read_buf2, read_size, &bytes_read2, portMAX_DELAY);
         if (err1 != ESP_OK || err2 != ESP_OK || bytes_read1 == 0 || bytes_read2 == 0)
         {
+            xQueueSend(free_queue, &output_buffer, portMAX_DELAY);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -194,6 +211,7 @@ static void mic_capture_task(void *arg)
             frames_to_fill = available_frames2;
         }
 
+        int16_t *pcm_out = (int16_t *)output_buffer;
         for (int frame = 0; frame < frames_to_fill; frame++)
         {
             int32_t sample1_l = i2s_read_buf[frame * 2];
@@ -206,27 +224,32 @@ static void mic_capture_task(void *arg)
             int16_t sample16_2_r = (int16_t)(sample2_r >> 13);
 
             int idx = frame * IN_CHANNEL_NUM;
-            pcm_local_buf[idx++] = sample16_1_r;
-            pcm_local_buf[idx++] = sample16_1_l;
-            pcm_local_buf[idx++] = sample16_2_r;
-            pcm_local_buf[idx++] = sample16_2_l;
+            pcm_out[idx++] = sample16_1_r;
+            pcm_out[idx++] = sample16_1_l;
+            pcm_out[idx++] = sample16_2_r;
+            pcm_out[idx++] = sample16_2_l;
         }
 
         if (frames_to_fill < frame_count_per_packet)
         {
             int start = frames_to_fill * IN_CHANNEL_NUM;
             int count = (frame_count_per_packet - frames_to_fill) * IN_CHANNEL_NUM;
-            memset(&pcm_local_buf[start], 0, count * sizeof(int16_t));
+            memset(&pcm_out[start], 0, count * sizeof(int16_t));
         }
 
-        if (write_stream != NULL)
-        {
-            xStreamBufferSend(write_stream, pcm_local_buf, packet_size, portMAX_DELAY);
-        }
+        xQueueSend(ready_queue, &output_buffer, portMAX_DELAY);
     }
 }
 
-void mic_i2s_start_task(StreamBufferHandle_t stream)
+void mic_i2s_start_task(QueueHandle_t free_queue, QueueHandle_t ready_queue)
 {
-    xTaskCreatePinnedToCore(mic_capture_task, "mic_capture", 4096, (void *)stream, 5, NULL, tskNO_AFFINITY);
+    struct mic_i2s_task_param *task_param = malloc(sizeof(struct mic_i2s_task_param));
+    if (task_param == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate I2S task parameters");
+        return;
+    }
+    task_param->free_queue = free_queue;
+    task_param->ready_queue = ready_queue;
+    xTaskCreatePinnedToCore(mic_capture_task, "mic_capture", 4096, task_param, 5, NULL, tskNO_AFFINITY);
 }

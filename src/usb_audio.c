@@ -4,7 +4,7 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/stream_buffer.h"
+#include "freertos/queue.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "usb_descriptor.h"
@@ -12,12 +12,17 @@
 
 #define TAG "USB_AUDIO"
 
-USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t write_buffer[AUDIO_IN_PACKET];
+#define AUDIO_SILENCE_BUFFER_COUNT 1
+USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t audio_transfer_buffers[AUDIO_TRANSFER_BUFFER_COUNT][AUDIO_IN_PACKET];
+USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t audio_silence_buffer[AUDIO_IN_PACKET];
 
 static volatile bool tx_flag = false;
-static StreamBufferHandle_t audio_read_stream = NULL;
+static QueueHandle_t audio_ready_queue = NULL;
+static QueueHandle_t audio_free_queue = NULL;
 static volatile uint32_t s_mic_sample_rate = AUDIO_IN_MAX_FREQ;
 static volatile int current_mic_volume = 100;
+static uint8_t *previous_tx_buffer = NULL;
+static bool previous_tx_buffer_is_pool = false;
 
 static void usbd_event_handler(uint8_t busid, uint8_t event)
 {
@@ -60,8 +65,10 @@ void usbd_audio_open(uint8_t busid, uint8_t intf)
     USB_LOG_RAW("OPEN\r\n");
 
     uint32_t packet_size = usb_audio_get_packet_size();
-    memset(write_buffer, 0, packet_size);
-    usbd_ep_start_write(busid, AUDIO_IN_EP, write_buffer, packet_size);
+    memset(audio_silence_buffer, 0, packet_size);
+    previous_tx_buffer = NULL;
+    previous_tx_buffer_is_pool = false;
+    usbd_ep_start_write(busid, AUDIO_IN_EP, audio_silence_buffer, packet_size);
 }
 
 void usbd_audio_close(uint8_t busid, uint8_t intf)
@@ -141,19 +148,29 @@ void usbd_audio_iso_in_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
 
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     uint32_t packet_size = usb_audio_get_packet_size();
+    uint8_t *next_buffer = NULL;
 
-    size_t received = 0;
-    if (audio_read_stream != NULL)
+    if (audio_ready_queue != NULL && xQueueReceiveFromISR(audio_ready_queue, &next_buffer, &xHigherPriorityTaskWoken) == pdTRUE)
     {
-        received = xStreamBufferReceiveFromISR(audio_read_stream, write_buffer, packet_size, &xHigherPriorityTaskWoken);
+        if (previous_tx_buffer != NULL && previous_tx_buffer_is_pool && audio_free_queue != NULL)
+        {
+            xQueueSendFromISR(audio_free_queue, &previous_tx_buffer, &xHigherPriorityTaskWoken);
+        }
+        previous_tx_buffer = next_buffer;
+        previous_tx_buffer_is_pool = true;
+        usbd_ep_start_write(busid, AUDIO_IN_EP, next_buffer, packet_size);
     }
-
-    if (received < packet_size)
+    else
     {
-        memset(write_buffer + received, 0, packet_size - received);
+        if (previous_tx_buffer != NULL && previous_tx_buffer_is_pool && audio_free_queue != NULL)
+        {
+            xQueueSendFromISR(audio_free_queue, &previous_tx_buffer, &xHigherPriorityTaskWoken);
+        }
+        previous_tx_buffer = NULL;
+        previous_tx_buffer_is_pool = false;
+        memset(audio_silence_buffer, 0, packet_size);
+        usbd_ep_start_write(busid, AUDIO_IN_EP, audio_silence_buffer, packet_size);
     }
-
-    usbd_ep_start_write(busid, AUDIO_IN_EP, write_buffer, packet_size);
 
     if (xHigherPriorityTaskWoken)
     {
@@ -195,8 +212,22 @@ static esp_err_t audio_v2_init(void)
     return ESP_OK;
 }
 
-esp_err_t usb_audio_init(StreamBufferHandle_t stream)
+esp_err_t usb_audio_init(QueueHandle_t ready_queue, QueueHandle_t free_queue)
 {
-    audio_read_stream = stream;
+    if (ready_queue == NULL || free_queue == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    audio_ready_queue = ready_queue;
+    audio_free_queue = free_queue;
+
+    for (int i = 0; i < AUDIO_TRANSFER_BUFFER_COUNT; i++)
+    {
+        uint8_t *buffer = audio_transfer_buffers[i];
+        xQueueSend(audio_free_queue, &buffer, 0);
+    }
+
+    memset(audio_silence_buffer, 0, AUDIO_IN_PACKET);
     return audio_v2_init();
 }

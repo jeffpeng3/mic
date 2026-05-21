@@ -4,14 +4,14 @@
 #include <esp_err.h>
 #include <stdint.h>
 #include <stddef.h>
-#include "freertos/stream_buffer.h"
+#include "freertos/queue.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 esp_err_t mic_i2s_init(void);
-void mic_i2s_start_task(StreamBufferHandle_t stream);
+void mic_i2s_start_task(QueueHandle_t free_queue, QueueHandle_t ready_queue);
 
 #ifdef __cplusplus
 }
