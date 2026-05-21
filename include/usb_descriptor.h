@@ -52,14 +52,13 @@
 #define INPUT_CH_ENABLE 0x00ff
 #endif
 
-#define AUDIO_IN_PACKET ((uint32_t)(((AUDIO_IN_MAX_FREQ / 1000) + 1) * HALF_WORD_BYTES * IN_CHANNEL_NUM))
+#define AUDIO_IN_PACKET ((uint32_t)((AUDIO_IN_MAX_FREQ * HALF_WORD_BYTES * IN_CHANNEL_NUM) / 1000))
 
 #define USB_AUDIO_CONFIG_DESC_SIZ (9 +                                                    \
                                    AUDIO_AC_DESCRIPTOR_LEN(1) +                           \
                                    AUDIO_SIZEOF_AC_INPUT_TERMINAL_DESC +                 \
                                    AUDIO_SIZEOF_AC_FEATURE_UNIT_DESC(IN_CHANNEL_NUM, 1) + \
                                    AUDIO_SIZEOF_AC_OUTPUT_TERMINAL_DESC +                \
-                                   9 +                                                   \
                                    AUDIO_AS_DESCRIPTOR_LEN(1))
 
 #define AUDIO_AC_SIZ (AUDIO_SIZEOF_AC_HEADER_DESC(1) +                       \

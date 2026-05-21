@@ -9,15 +9,6 @@ static const uint8_t config_descriptor[] = {
     AUDIO_AC_INPUT_TERMINAL_DESCRIPTOR_INIT(0x01, AUDIO_INTERM_MIC, IN_CHANNEL_NUM, INPUT_CH_ENABLE),
     AUDIO_AC_FEATURE_UNIT_DESCRIPTOR_INIT(AUDIO_IN_FU_ID, 0x01, 0x01, INPUT_CTRL),
     AUDIO_AC_OUTPUT_TERMINAL_DESCRIPTOR_INIT(0x03, AUDIO_TERMINAL_STREAMING, AUDIO_IN_FU_ID),
-    0x09,                          /* bLength */
-    USB_DESCRIPTOR_TYPE_INTERFACE, /* bDescriptorType */
-    0x01,                          /* bInterfaceNumber */
-    0x00,                          /* bAlternateSetting */
-    0x00,                          /* bNumEndpoints */
-    USB_DEVICE_CLASS_AUDIO,        /* bInterfaceClass */
-    AUDIO_SUBCLASS_AUDIOSTREAMING, /* bInterfaceSubClass */
-    0x00,                          /* bInterfaceProtocol */
-    0x00,                          /* iInterface */
     AUDIO_AS_DESCRIPTOR_INIT(0x01, 0x03, IN_CHANNEL_NUM, HALF_WORD_BYTES, SAMPLE_BITS, AUDIO_IN_EP, 0x05, AUDIO_IN_PACKET, EP_INTERVAL, AUDIO_SAMPLE_FREQ_3B(AUDIO_IN_MAX_FREQ))};
 
 static const uint8_t device_quality_descriptor[] = {
