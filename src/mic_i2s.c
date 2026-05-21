@@ -20,8 +20,50 @@
 #define I2S2_BCLK_PIN 6
 #define I2S2_DIN_PIN 7
 
+/* Use DMA buffering to minimize CPU involvement and reduce jitter.
+   A larger DMA descriptor ring helps avoid underruns when USB/RTOS scheduling
+   introduces momentary latency. */
+#define I2S_DMA_DESC_NUM 4
+#define I2S_DMA_FRAME_NUM 240
+
 static i2s_chan_handle_t rx_chan1 = NULL;
 static i2s_chan_handle_t rx_chan2 = NULL;
+
+static i2s_std_config_t mic_i2s_std_cfg(int bclk_pin, int ws_pin, int din_pin)
+{
+    return (i2s_std_config_t){
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(I2S_SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = bclk_pin,
+            .ws = ws_pin,
+            .dout = I2S_GPIO_UNUSED,
+            .din = din_pin,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+}
+
+static esp_err_t mic_i2s_new_rx_channel(i2s_chan_handle_t *chan, i2s_port_t id, int bclk_pin, int ws_pin, int din_pin)
+{
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(id, I2S_ROLE_MASTER);
+    chan_cfg.dma_desc_num = I2S_DMA_DESC_NUM;
+    chan_cfg.dma_frame_num = I2S_DMA_FRAME_NUM;
+
+    esp_err_t err = i2s_new_channel(&chan_cfg, NULL, chan);
+    if (err != ESP_OK)
+    {
+        return err;
+    }
+
+    i2s_std_config_t std_cfg = mic_i2s_std_cfg(bclk_pin, ws_pin, din_pin);
+    return i2s_channel_init_std_mode(*chan, &std_cfg);
+}
 
 static void mic_i2s_discard_initial_samples(i2s_chan_handle_t channel)
 {
@@ -36,73 +78,22 @@ static void mic_i2s_discard_initial_samples(i2s_chan_handle_t channel)
 
 esp_err_t mic_i2s_init(void)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 4;
-    chan_cfg.dma_frame_num = 128;
-
-    esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &rx_chan1);
+    esp_err_t err = mic_i2s_new_rx_channel(&rx_chan1, I2S_NUM_0, I2S1_BCLK_PIN, I2S1_WS_PIN, I2S1_DIN_PIN);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "i2s_new_channel(1) failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "mic_i2s_new_rx_channel(1) failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    chan_cfg.id = I2S_NUM_1;
-    err = i2s_new_channel(&chan_cfg, NULL, &rx_chan2);
+    err = mic_i2s_new_rx_channel(&rx_chan2, I2S_NUM_1, I2S2_BCLK_PIN, I2S2_WS_PIN, I2S2_DIN_PIN);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "i2s_new_channel(2) failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "mic_i2s_new_rx_channel(2) failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    i2s_std_config_t std_cfg1 = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(I2S_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = I2S1_BCLK_PIN,
-            .ws = I2S1_WS_PIN,
-            .dout = I2S_GPIO_UNUSED,
-            .din = I2S1_DIN_PIN,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
-    };
-
-    err = i2s_channel_init_std_mode(rx_chan1, &std_cfg1);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "i2s_channel_init_std_mode(1) failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    i2s_std_config_t std_cfg2 = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(I2S_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = I2S2_BCLK_PIN,
-            .ws = I2S2_WS_PIN,
-            .dout = I2S_GPIO_UNUSED,
-            .din = I2S2_DIN_PIN,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
-    };
-
-    err = i2s_channel_init_std_mode(rx_chan2, &std_cfg2);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "i2s_channel_init_std_mode(2) failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
+    /* Both I2S channels are configured first, then enabled together to reduce
+       startup skew and ensure a single trigger point for DMA capture. */
     err = i2s_channel_enable(rx_chan1);
     if (err != ESP_OK)
     {
@@ -136,6 +127,30 @@ static esp_err_t mic_i2s_read_channel(i2s_chan_handle_t channel, void *dest, siz
     return i2s_channel_read(channel, dest, size, bytes_read, timeout_ms);
 }
 
+static esp_err_t mic_i2s_read_full(i2s_chan_handle_t channel, void *dest, size_t size, uint32_t timeout_ms)
+{
+    if (channel == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    size_t total_read = 0;
+    while (total_read < size)
+    {
+        size_t bytes_read = 0;
+        esp_err_t err = i2s_channel_read(channel, (uint8_t *)dest + total_read, size - total_read, &bytes_read, timeout_ms);
+        if (err != ESP_OK)
+        {
+            return err;
+        }
+        if (bytes_read == 0)
+        {
+            return ESP_ERR_TIMEOUT;
+        }
+        total_read += bytes_read;
+    }
+    return ESP_OK;
+}
 
 static uint32_t mic_get_packet_size(void)
 {
@@ -180,36 +195,18 @@ static void mic_capture_task(void *arg)
         }
 
         const int frame_count_per_packet = packet_size / (HALF_WORD_BYTES * IN_CHANNEL_NUM);
-        size_t read_size = frame_count_per_packet * 2 * sizeof(int32_t);
-        if (read_size > sizeof(i2s_read_buf))
-        {
-            read_size = sizeof(i2s_read_buf);
-        }
+        size_t read_size = packet_size;
 
-        size_t bytes_read1 = 0;
-        esp_err_t err1 = mic_i2s_read_channel(rx_chan1, i2s_read_buf, read_size, &bytes_read1, portMAX_DELAY);
-        size_t bytes_read2 = 0;
-        esp_err_t err2 = mic_i2s_read_channel(rx_chan2, i2s_read_buf2, read_size, &bytes_read2, portMAX_DELAY);
-        if (err1 != ESP_OK || err2 != ESP_OK || bytes_read1 == 0 || bytes_read2 == 0)
+        esp_err_t err1 = mic_i2s_read_full(rx_chan1, i2s_read_buf, read_size, portMAX_DELAY);
+        esp_err_t err2 = mic_i2s_read_full(rx_chan2, i2s_read_buf2, read_size, portMAX_DELAY);
+        if (err1 != ESP_OK || err2 != ESP_OK)
         {
             xQueueSend(free_queue, &output_buffer, portMAX_DELAY);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        int samples_read1 = bytes_read1 / sizeof(int32_t);
-        int samples_read2 = bytes_read2 / sizeof(int32_t);
         int frames_to_fill = frame_count_per_packet;
-        int available_frames1 = samples_read1 / 2;
-        int available_frames2 = samples_read2 / 2;
-        if (available_frames1 < frames_to_fill)
-        {
-            frames_to_fill = available_frames1;
-        }
-        if (available_frames2 < frames_to_fill)
-        {
-            frames_to_fill = available_frames2;
-        }
 
         int16_t *pcm_out = (int16_t *)output_buffer;
         for (int frame = 0; frame < frames_to_fill; frame++)

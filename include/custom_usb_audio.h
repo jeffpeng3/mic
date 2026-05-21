@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 
-#define AUDIO_TRANSFER_BUFFER_COUNT 4
+/* Increase USB audio packet buffering to reduce dropouts under scheduler jitter. */
+#define AUDIO_TRANSFER_BUFFER_COUNT 16
 
 esp_err_t usb_audio_init(QueueHandle_t ready_queue, QueueHandle_t free_queue);
 uint32_t usb_audio_get_packet_size(void);
