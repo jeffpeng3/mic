@@ -200,10 +200,10 @@ static void mic_capture_task(void *arg)
             int32_t sample1_r = i2s_read_buf[frame * 2 + 1];
             int32_t sample2_l = i2s_read_buf2[frame * 2];
             int32_t sample2_r = i2s_read_buf2[frame * 2 + 1];
-            int16_t sample16_1_l = (int16_t)(sample1_l >> 12);
-            int16_t sample16_1_r = (int16_t)(sample1_r >> 12);
-            int16_t sample16_2_l = (int16_t)(sample2_l >> 12);
-            int16_t sample16_2_r = (int16_t)(sample2_r >> 12);
+            int16_t sample16_1_l = (int16_t)(sample1_l >> 13);
+            int16_t sample16_1_r = (int16_t)(sample1_r >> 13);
+            int16_t sample16_2_l = (int16_t)(sample2_l >> 13);
+            int16_t sample16_2_r = (int16_t)(sample2_r >> 13);
 
             int idx = frame * IN_CHANNEL_NUM;
             pcm_local_buf[idx++] = sample16_1_l;

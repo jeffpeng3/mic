@@ -26,9 +26,9 @@ static const uint8_t device_quality_descriptor[] = {
 
 static const char *string_descriptors[] = {
     (const char[]){0x09, 0x04},
-    "CheraaaryUSB",
-    "Che DEMO",
-    "20221z23456",
+    "cheeeeeee",
+    "ben0w0b Pro Max",
+    "20030814",
 };
 
 static const uint8_t *device_descriptor_callback(uint8_t speed)

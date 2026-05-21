@@ -11,7 +11,7 @@
 #define STREAM_BUFFER_PACKET_COUNT 4
 #define STREAM_BUFFER_SIZE (AUDIO_IN_PACKET * STREAM_BUFFER_PACKET_COUNT)
 
-// #define USE_I2S_MIC
+#define USE_I2S_MIC
 
 static const char *TAG = "APP_MAIN";
 static StreamBufferHandle_t audio_buffer = NULL;
