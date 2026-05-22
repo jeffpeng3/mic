@@ -4,8 +4,11 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "driver/i2s_std.h"
+#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
+#include "soc/gpio_sig_map.h"
 #include "usb_descriptor.h"
 #include <mic_i2s.h>
 
@@ -49,9 +52,9 @@ static i2s_std_config_t mic_i2s_std_cfg(int bclk_pin, int ws_pin, int din_pin)
     };
 }
 
-static esp_err_t mic_i2s_new_rx_channel(i2s_chan_handle_t *chan, i2s_port_t id, int bclk_pin, int ws_pin, int din_pin)
+static esp_err_t mic_i2s_new_rx_channel(i2s_chan_handle_t *chan, i2s_port_t id, i2s_role_t role, int bclk_pin, int ws_pin, int din_pin)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(id, I2S_ROLE_MASTER);
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(id, role);
     chan_cfg.dma_desc_num = I2S_DMA_DESC_NUM;
     chan_cfg.dma_frame_num = I2S_DMA_FRAME_NUM;
 
@@ -78,43 +81,50 @@ static void mic_i2s_discard_initial_samples(i2s_chan_handle_t channel)
 
 esp_err_t mic_i2s_init(void)
 {
-    esp_err_t err = mic_i2s_new_rx_channel(&rx_chan1, I2S_NUM_0, I2S1_BCLK_PIN, I2S1_WS_PIN, I2S1_DIN_PIN);
+    // 1. Init I2S0 as Master
+    esp_err_t err = mic_i2s_new_rx_channel(&rx_chan1, I2S_NUM_0, I2S_ROLE_MASTER, I2S1_BCLK_PIN, I2S1_WS_PIN, I2S1_DIN_PIN);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "mic_i2s_new_rx_channel(0) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // 2. Init I2S1 as Slave
+    err = mic_i2s_new_rx_channel(&rx_chan2, I2S_NUM_1, I2S_ROLE_SLAVE, I2S2_BCLK_PIN, I2S2_WS_PIN, I2S2_DIN_PIN);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "mic_i2s_new_rx_channel(1) failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = mic_i2s_new_rx_channel(&rx_chan2, I2S_NUM_1, I2S2_BCLK_PIN, I2S2_WS_PIN, I2S2_DIN_PIN);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "mic_i2s_new_rx_channel(2) failed: %s", esp_err_to_name(err));
-        return err;
-    }
+    // 3. GPIO Matrix Routing: Connect I2S0 TX signals to I2S1 RX pins
+    gpio_set_direction(I2S2_BCLK_PIN, GPIO_MODE_INPUT_OUTPUT);
+    gpio_set_direction(I2S2_WS_PIN, GPIO_MODE_INPUT_OUTPUT);
 
-    /* Both I2S channels are configured first, then enabled together to reduce
-       startup skew and ensure a single trigger point for DMA capture. */
-    err = i2s_channel_enable(rx_chan1);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "i2s_channel_enable(1) failed: %s", esp_err_to_name(err));
-        return err;
-    }
+    esp_rom_gpio_connect_out_signal(I2S2_BCLK_PIN, I2S0O_BCK_OUT_IDX, false, false);
+    esp_rom_gpio_connect_out_signal(I2S2_WS_PIN, I2S0O_WS_OUT_IDX, false, false);
 
+    // 4. State Machine Enable Sequence (Strict: Slave -> Master)
     err = i2s_channel_enable(rx_chan2);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "i2s_channel_enable(2) failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "i2s_channel_enable(slave) failed: %s", esp_err_to_name(err));
         return err;
     }
 
+    err = i2s_channel_enable(rx_chan1);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "i2s_channel_enable(master) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // 5. Buffer Flush
     mic_i2s_discard_initial_samples(rx_chan1);
     mic_i2s_discard_initial_samples(rx_chan2);
 
-    ESP_LOGI(TAG, "I2S stereo init done: CH1(SD=%d,SCK=%d,WS=%d) CH2(SD=%d,SCK=%d,WS=%d), SR=%u",
-             I2S1_DIN_PIN, I2S1_BCLK_PIN, I2S1_WS_PIN,
-             I2S2_DIN_PIN, I2S2_BCLK_PIN, I2S2_WS_PIN,
-             I2S_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S Sync Configured. Master: %d/%d, Slave: %d/%d (Matrix Mapped)", 
+             I2S1_BCLK_PIN, I2S1_WS_PIN, I2S2_BCLK_PIN, I2S2_WS_PIN);
     return ESP_OK;
 }
 
