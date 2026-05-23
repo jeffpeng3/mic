@@ -15,13 +15,13 @@
 #define TAG "MIC_I2S"
 #define I2S_SAMPLE_RATE 48000
 
-#define I2S1_WS_PIN 35
-#define I2S1_BCLK_PIN 36
-#define I2S1_DIN_PIN 37
+#define I2S1_WS_PIN 36
+#define I2S1_BCLK_PIN 37
+#define I2S1_DIN_PIN 35
 
-#define I2S2_WS_PIN 5
-#define I2S2_BCLK_PIN 6
-#define I2S2_DIN_PIN 7
+#define I2S2_WS_PIN I2S1_WS_PIN
+#define I2S2_BCLK_PIN I2S1_BCLK_PIN
+#define I2S2_DIN_PIN 38
 
 /* Use DMA buffering to minimize CPU involvement and reduce jitter.
    A larger DMA descriptor ring helps avoid underruns when USB/RTOS scheduling
@@ -97,12 +97,12 @@ esp_err_t mic_i2s_init(void)
         return err;
     }
 
-    // 3. GPIO Matrix Routing: Connect I2S0 TX signals to I2S1 RX pins
-    gpio_set_direction(I2S2_BCLK_PIN, GPIO_MODE_INPUT_OUTPUT);
-    gpio_set_direction(I2S2_WS_PIN, GPIO_MODE_INPUT_OUTPUT);
+    // // 3. GPIO Matrix Routing: Connect I2S0 TX signals to I2S1 RX pins
+    // gpio_set_direction(I2S2_BCLK_PIN, GPIO_MODE_INPUT_OUTPUT);
+    // gpio_set_direction(I2S2_WS_PIN, GPIO_MODE_INPUT_OUTPUT);
 
-    esp_rom_gpio_connect_out_signal(I2S2_BCLK_PIN, I2S0O_BCK_OUT_IDX, false, false);
-    esp_rom_gpio_connect_out_signal(I2S2_WS_PIN, I2S0O_WS_OUT_IDX, false, false);
+    // esp_rom_gpio_connect_out_signal(I2S2_BCLK_PIN, I2S0O_BCK_OUT_IDX, false, false);
+    // esp_rom_gpio_connect_out_signal(I2S2_WS_PIN, I2S0O_WS_OUT_IDX, false, false);
 
     // 4. State Machine Enable Sequence (Strict: Slave -> Master)
     err = i2s_channel_enable(rx_chan2);
@@ -126,15 +126,6 @@ esp_err_t mic_i2s_init(void)
     ESP_LOGI(TAG, "I2S Sync Configured. Master: %d/%d, Slave: %d/%d (Matrix Mapped)", 
              I2S1_BCLK_PIN, I2S1_WS_PIN, I2S2_BCLK_PIN, I2S2_WS_PIN);
     return ESP_OK;
-}
-
-static esp_err_t mic_i2s_read_channel(i2s_chan_handle_t channel, void *dest, size_t size, size_t *bytes_read, uint32_t timeout_ms)
-{
-    if (channel == NULL)
-    {
-        return ESP_ERR_INVALID_STATE;
-    }
-    return i2s_channel_read(channel, dest, size, bytes_read, timeout_ms);
 }
 
 static esp_err_t mic_i2s_read_full(i2s_chan_handle_t channel, void *dest, size_t size, uint32_t timeout_ms)
@@ -231,10 +222,10 @@ static void mic_capture_task(void *arg)
             int16_t sample16_2_r = (int16_t)(sample2_r >> 13);
 
             int idx = frame * IN_CHANNEL_NUM;
-            pcm_out[idx++] = sample16_1_r;
-            pcm_out[idx++] = sample16_1_l;
-            pcm_out[idx++] = sample16_2_r;
             pcm_out[idx++] = sample16_2_l;
+            pcm_out[idx++] = sample16_2_r;
+            pcm_out[idx++] = sample16_1_l;
+            pcm_out[idx++] = sample16_1_r;
         }
 
         if (frames_to_fill < frame_count_per_packet)
